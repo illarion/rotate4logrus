@@ -27,8 +27,6 @@ func TestRotate(t *testing.T) {
 
 	log.Hooks.Add(hook)
 
-	for {
-		log.Debug("1")
-	}
+	log.Debug("1")
 
 }
