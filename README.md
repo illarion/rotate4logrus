@@ -6,7 +6,7 @@
 
 ```
 	var log = logrus.New()
-  log.Level = logrus.TraceLevel
+  	log.Level = logrus.TraceLevel
 	log.Formatter = new(logrus.TextFormatter)
 
 	hook, err := rotate4logrus.New(rotate4logrus.HookConfig{
