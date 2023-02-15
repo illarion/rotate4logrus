@@ -1,12 +1,12 @@
 package rotate4logrus
 
 import (
+	"context"
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"os"
 	"strconv"
 	"sync"
-
-	"github.com/sirupsen/logrus"
 )
 
 // HookConfig should be used in order to construct logrotating Hook
@@ -18,19 +18,104 @@ type HookConfig struct {
 	// Rotate log file count times before removing. If Rotate count is 0, old versions are removed rather than rotated.
 	Rotate int
 	// Log file is rotated only if it grows bigger then Size bytes. If Size is 0, ignored
-	Size int64
+	Size uint64
 	// File mode, like 0600
 	Mode os.FileMode
 }
 
-type hook struct {
+type Hook struct {
+	ctx  context.Context
 	cfg  *HookConfig
 	file *os.File
-	size int64
+	size uint64
 	m    sync.Mutex
+
+	pauses  chan pauseRequest
+	queries chan pausedQuery
 }
 
-func (h *hook) open() error {
+type pauseRequest struct {
+	response chan func()
+}
+
+type pausedQuery struct {
+	response chan bool
+}
+
+func New(context context.Context, cfg HookConfig) (*Hook, error) {
+
+	hook := &Hook{
+		ctx:     context,
+		cfg:     &cfg,
+		pauses:  make(chan pauseRequest),
+		queries: make(chan pausedQuery),
+	}
+
+	err := hook.open()
+	if err != nil {
+		return nil, err
+	}
+
+	go func() {
+		locks := make(map[*struct{}]struct{})
+		for {
+			select {
+			case <-context.Done():
+				return
+			case r := <-hook.pauses:
+				lock := &struct{}{}
+				locks[lock] = struct{}{}
+				r.response <- func() {
+					delete(locks, lock)
+				}
+			case q := <-hook.queries:
+				q.response <- len(locks) > 0
+			}
+		}
+	}()
+
+	return hook, nil
+}
+
+// Pause pauses the hook from rotating of the log file.
+// It returns a function that should be called to resume the hook.
+// It is recommended to call the returned function in a defer statement,
+// or make sure that it is called as soon as possible, in order to avoid
+// situations where the hook is paused for a long time so that log rotation
+// is not performed.
+func (h *Hook) Pause() (Continue func()) {
+	select {
+	case <-h.ctx.Done():
+		return func() {}
+	default:
+	}
+
+	r := pauseRequest{
+		response: make(chan func()),
+	}
+	h.pauses <- r
+	return <-r.response
+}
+
+func (h *Hook) paused() bool {
+	select {
+	case <-h.ctx.Done():
+		return false
+	default:
+	}
+	q := pausedQuery{
+		response: make(chan bool),
+	}
+	h.queries <- q
+	return <-q.response
+}
+
+func (h *Hook) open() error {
+	select {
+	case <-h.ctx.Done():
+		return fmt.Errorf("Rotate4Logrus context is done")
+	default:
+	}
 	file, err := os.OpenFile(h.cfg.FilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, h.cfg.Mode)
 
 	if err != nil {
@@ -44,36 +129,29 @@ func (h *hook) open() error {
 	}
 
 	h.file = file
-	h.size = stat.Size()
+	h.size = uint64(stat.Size())
 	return nil
 }
 
-func New(cfg HookConfig) (logrus.Hook, error) {
-
-	hook := &hook{
-		cfg: &cfg,
-	}
-
-	err := hook.open()
-	if err != nil {
-		return nil, err
-	}
-
-	return hook, nil
-}
-
-func (h *hook) Levels() []logrus.Level {
+func (h *Hook) Levels() []logrus.Level {
 	return h.cfg.Levels
 }
 
-func (h *hook) Fire(entry *logrus.Entry) error {
+func (h *Hook) Fire(entry *logrus.Entry) error {
+	select {
+	case <-h.ctx.Done():
+		return fmt.Errorf("Rotate4Logrus context is done")
+	default:
+	}
 	bytes, err := entry.Bytes()
 
 	if err != nil {
 		return fmt.Errorf("Could not convert log entry to bytes: %w", err)
 	}
 
-	if h.cfg.Size == 0 {
+	paused := h.paused()
+
+	if h.cfg.Size == 0 || paused {
 		_, err := h.file.Write(bytes)
 		if err != nil {
 			return fmt.Errorf("Could not write to log file %s: %w", h.cfg.FilePath, err)
@@ -81,7 +159,7 @@ func (h *hook) Fire(entry *logrus.Entry) error {
 		return nil
 	}
 
-	if h.size+int64(len(bytes)) > h.cfg.Size {
+	if h.size+uint64(len(bytes)) > h.cfg.Size {
 		err = h.rotate()
 
 		if err != nil {
@@ -94,12 +172,17 @@ func (h *hook) Fire(entry *logrus.Entry) error {
 		return fmt.Errorf("Could not write to log file %s: %w", h.cfg.FilePath, err)
 	}
 
-	h.size += int64(n)
+	h.size += uint64(n)
 
 	return nil
 }
 
-func (h *hook) rotate() error {
+func (h *Hook) rotate() error {
+	select {
+	case <-h.ctx.Done():
+		return fmt.Errorf("Rotate4Logrus context is done")
+	default:
+	}
 	h.m.Lock()
 	defer h.m.Unlock()
 

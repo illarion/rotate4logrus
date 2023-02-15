@@ -1,4 +1,4 @@
-module github.com/illarion/rotate4logrus
+module github.com/illarion/rotate4logrus/v2
 
 go 1.17
 
