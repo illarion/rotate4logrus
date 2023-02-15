@@ -90,7 +90,7 @@ func TestHook_Rotate(t *testing.T) {
 
 	log.Level = logrus.TraceLevel
 	log.Hooks.Add(hook)
-	for i := 0; i < n+1; i++ {
+	for i := 0; i < n+10; i++ {
 		log.Debug("1")
 	}
 
@@ -141,7 +141,7 @@ func TestHook_Pause(t *testing.T) {
 
 	log.Level = logrus.TraceLevel
 	log.Hooks.Add(hook)
-	for i := 0; i < n+1; i++ {
+	for i := 0; i < n+10; i++ {
 		log.Debug("1")
 	}
 
