@@ -17,6 +17,15 @@ import (
 
 var tmpDir = os.TempDir()
 
+type countingWriter struct {
+	count uint64
+}
+
+func (c *countingWriter) Write(p []byte) (n int, err error) {
+	c.count += uint64(len(p))
+	return len(p), nil
+}
+
 func setup() (string, func()) {
 	randomFileName := fmt.Sprintf("rotating_%s.log", strconv.Itoa(rand.Int()))
 	return randomFileName, func() {
@@ -68,29 +77,35 @@ func TestHook_Fire(t *testing.T) {
 func TestHook_Rotate(t *testing.T) {
 	var log = logrus.New()
 	log.Formatter = new(logrus.TextFormatter)
-	log.SetOutput(io.Discard)
+
+	cw := &countingWriter{}
+
+	log.SetOutput(cw)
 
 	ctx := context.Background()
 	fileName, tearDown := setup()
 	defer tearDown()
 
+	var size uint64 = 16000
+
 	hook, err := rotate4logrus.New(ctx, rotate4logrus.HookConfig{
 		Levels:   logrus.AllLevels,
 		FilePath: path.Join(tmpDir, fileName),
 		Rotate:   5,
-		Size:     16000,
+		Size:     size,
 		Mode:     0600,
 	})
 
 	if err != nil {
 		t.Error(err)
 	}
-	msgPrefixLen := len("time=\"2023-02-15T11:53:08+02:00\" level=debug msg=")
-	n := 16000 / msgPrefixLen
 
 	log.Level = logrus.TraceLevel
 	log.Hooks.Add(hook)
-	for i := 0; i < n+10; i++ {
+	for {
+		if cw.count > size+1 {
+			break
+		}
 		log.Debug("1")
 	}
 
@@ -116,32 +131,37 @@ func TestHook_Rotate(t *testing.T) {
 func TestHook_Pause(t *testing.T) {
 	var log = logrus.New()
 	log.Formatter = new(logrus.TextFormatter)
-	log.SetOutput(io.Discard)
+	cw := &countingWriter{}
+	log.SetOutput(cw)
 
 	ctx := context.Background()
 	fileName, tearDown := setup()
 	defer tearDown()
 
+	var size uint64 = 16000
+
 	hook, err := rotate4logrus.New(ctx, rotate4logrus.HookConfig{
 		Levels:   logrus.AllLevels,
 		FilePath: path.Join(tmpDir, fileName),
 		Rotate:   5,
-		Size:     16000,
+		Size:     size,
 		Mode:     0600,
 	})
 
 	if err != nil {
 		t.Error(err)
 	}
-	msgPrefixLen := len("time=\"2023-02-15T11:53:08+02:00\" level=debug msg=")
-	n := 16000 / msgPrefixLen
 
 	continueFn := hook.Pause()
 	defer continueFn()
 
 	log.Level = logrus.TraceLevel
 	log.Hooks.Add(hook)
-	for i := 0; i < n+10; i++ {
+
+	for {
+		if cw.count > size+1 {
+			break
+		}
 		log.Debug("1")
 	}
 
