@@ -179,7 +179,121 @@ func TestHook_Pause(t *testing.T) {
 	}
 
 	if rotatedFiles != 1 {
-		t.Errorf("expected 2 rotated files, got %d", rotatedFiles)
+		t.Errorf("expected 1 rotated files, got %d", rotatedFiles)
+	}
+
+}
+
+func TestHook_Config_NeedRotate_False(t *testing.T) {
+	var log = logrus.New()
+	log.Formatter = new(logrus.TextFormatter)
+	cw := &countingWriter{}
+	log.SetOutput(cw)
+
+	ctx := context.Background()
+	fileName, tearDown := setup()
+	defer tearDown()
+
+	var size uint64 = 16
+
+	hook, err := rotate4logrus.New(ctx, rotate4logrus.HookConfig{
+		Levels:   logrus.AllLevels,
+		FilePath: path.Join(tmpDir, fileName),
+		Rotate:   5,
+		Size:     size,
+		Mode:     0600,
+		NeedRotate: func(file *os.File, lenBytes int) bool {
+			return false
+		},
+	})
+
+	if err != nil {
+		t.Error(err)
+	}
+
+	log.Level = logrus.TraceLevel
+	log.Hooks.Add(hook)
+
+	for {
+		if cw.count > size+1 {
+			break
+		}
+		log.Debug("1")
+	}
+
+	//ceheck that there are rotated files
+	files, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Error(err)
+	}
+
+	rotatedFiles := 0
+	for _, file := range files {
+		if strings.HasPrefix(file.Name(), fileName) {
+			rotatedFiles++
+		}
+	}
+
+	if rotatedFiles != 1 {
+		t.Errorf("expected 1 file, got %d", rotatedFiles)
+	}
+
+}
+
+func TestHook_Config_NeedRotate_True(t *testing.T) {
+	var log = logrus.New()
+	log.Formatter = new(logrus.TextFormatter)
+	cw := &countingWriter{}
+	log.SetOutput(cw)
+
+	ctx := context.Background()
+	fileName, tearDown := setup()
+	defer tearDown()
+
+	var size uint64 = 16000
+	var expectedRotatedFiles int = 10
+
+	hook, err := rotate4logrus.New(ctx, rotate4logrus.HookConfig{
+		Levels:   logrus.AllLevels,
+		FilePath: path.Join(tmpDir, fileName),
+		Rotate:   15,
+		Size:     size,
+		Mode:     0600,
+		NeedRotate: func(file *os.File, lenBytes int) bool {
+			s, _ := file.Stat()
+			return uint64(s.Size()) >= (size / uint64(expectedRotatedFiles))
+		},
+	})
+
+	if err != nil {
+		t.Error(err)
+	}
+
+	log.Level = logrus.TraceLevel
+	log.Hooks.Add(hook)
+
+	for {
+		if cw.count > size+1 {
+			break
+		}
+		log.Debug("1")
+	}
+
+	//ceheck that there are rotated files
+	files, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Error(err)
+	}
+
+	rotatedFiles := 0
+	for _, file := range files {
+		if strings.HasPrefix(file.Name(), fileName) {
+			rotatedFiles++
+		}
+	}
+
+	if rotatedFiles != expectedRotatedFiles {
+		t.Errorf("expected %d file, got %d", expectedRotatedFiles, rotatedFiles)
 	}
 
 }

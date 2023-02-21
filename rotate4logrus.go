@@ -9,6 +9,12 @@ import (
 	"sync"
 )
 
+// NeedRotateFunc is a function that is called to determine if the log file should be rotated.
+// Allows for custom (and porbably target os specific) rotation logic. All errors
+// should be handled by the function itself, and not returned. For example, if the
+// file is not accessible, the function can decide not to rotate the file.
+type NeedRotateFunc func(file *os.File, lenBytes int) bool
+
 // HookConfig should be used in order to construct logrotating Hook
 type HookConfig struct {
 	// Levels to fire
@@ -18,7 +24,13 @@ type HookConfig struct {
 	// Rotate log file count times before removing. If Rotate count is 0, old versions are removed rather than rotated.
 	Rotate int
 	// Log file is rotated only if it grows bigger then Size bytes. If Size is 0, ignored
+	// If NeedRotate is not nil, it overrides Size.
 	Size uint64
+	// NeedRotate is a function that is called to determine if the log file should be rotated.
+	// Allows for custom (and porbably target os specific) rotation logic.
+	// If NeedRotate is not nil, it overrides Size.
+	// The function is called with the file and the number of bytes that would be written to the file.
+	NeedRotate NeedRotateFunc
 	// File mode, like 0600
 	Mode os.FileMode
 }
@@ -32,6 +44,8 @@ type Hook struct {
 
 	pauses  chan pauseRequest
 	queries chan pausedQuery
+
+	needRotate func(file *os.File, lenBytes int) (bool, error)
 }
 
 type pauseRequest struct {
@@ -49,6 +63,33 @@ func New(context context.Context, cfg HookConfig) (*Hook, error) {
 		cfg:     &cfg,
 		pauses:  make(chan pauseRequest),
 		queries: make(chan pausedQuery),
+	}
+
+	// default needRotate function based on size
+	hook.needRotate = func(file *os.File, lenBytes int) (bool, error) {
+		paused := hook.paused()
+		if paused {
+			return false, nil
+		}
+		return hook.size+uint64(lenBytes) >= cfg.Size, nil
+	}
+
+	if cfg.NeedRotate != nil {
+		hook.needRotate = func(file *os.File, lenBytes int) (result bool, err error) {
+			paused := hook.paused()
+			if paused {
+				return false, nil
+			}
+			defer func() {
+				if r := recover(); r != nil {
+					result = false
+					err = fmt.Errorf("user defined NeedRotate() function panicked: %v", r)
+				}
+			}()
+			result = cfg.NeedRotate(file, lenBytes)
+			err = nil
+			return
+		}
 	}
 
 	err := hook.open()
@@ -149,27 +190,21 @@ func (h *Hook) Fire(entry *logrus.Entry) error {
 		return fmt.Errorf("Could not convert log entry to bytes: %w", err)
 	}
 
-	paused := h.paused()
-
-	if h.cfg.Size == 0 || paused {
-		_, err := h.file.Write(bytes)
-		if err != nil {
-			return fmt.Errorf("Could not write to log file %s: %w", h.cfg.FilePath, err)
-		}
-		return nil
+	rotate, err := h.needRotate(h.file, len(bytes))
+	if err != nil {
+		return err
 	}
-
-	if h.size+uint64(len(bytes)) > h.cfg.Size {
+	if rotate {
 		err = h.rotate()
-
 		if err != nil {
-			return fmt.Errorf("Could not rotate log files: %w", err)
+			return fmt.Errorf("could not rotate log files: %w", err)
 		}
+		h.size = 0
 	}
 
 	n, err := h.file.Write(bytes)
 	if err != nil {
-		return fmt.Errorf("Could not write to log file %s: %w", h.cfg.FilePath, err)
+		return fmt.Errorf("could not write to log file %s: %w", h.cfg.FilePath, err)
 	}
 
 	h.size += uint64(n)
